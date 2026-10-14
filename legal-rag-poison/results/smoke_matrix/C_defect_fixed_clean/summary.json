@@ -1,0 +1,15 @@
+{
+  "attack": "none",
+  "n_questions": 6,
+  "n_payloads": 0,
+  "accuracy": 0.1667,
+  "error_rate": 0.8333,
+  "gold_in_topk_rate": 0.5,
+  "target_any_in_topk_rate": 0.0,
+  "target_injected_in_topk_rate": null,
+  "asr": null,
+  "target_hit_to_old": 0.0,
+  "n_to_old": 3,
+  "target_hit_to_new": 0.0,
+  "n_to_new": 3
+}

@@ -89,6 +89,7 @@ class ArticleVersion:
     effective_to: Optional[str]  # "2021-02-28"，None 表示现行有效
     amended_by: Optional[str] = None
     penalty_max_months: Optional[int] = None
+    source: Optional[str] = None  # 来源 URL / 出处，用于论文的数据溯源表
     meta: dict = field(default_factory=dict)   # 攻击时可能篡改的字段放这里
 
     def covers(self, date: str) -> bool:
@@ -110,6 +111,9 @@ class Question:
     gold_version_id: str         # 由从旧兼从轻算出
     gold_penalty_max_months: int
     gold_nuggets: dict           # {"article_id": "176", "years": 15}
+    fact_label: Optional[str] = None              # 题面里的档位表述，如 "数额特别巨大"
+    attack_target_version_id: Optional[str] = None  # 攻击者希望系统采纳的错误版本
+    attack_direction: Optional[str] = None          # "to_old" / "to_new"
 
     def to_dict(self):
         return asdict(self)

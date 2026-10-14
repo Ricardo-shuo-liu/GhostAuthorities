@@ -1,0 +1,26 @@
+{
+  "name": "e5_core",
+  "meta": "E5 核心 2x2：缺陷（无版本感知 vs as-of 过滤）x 攻击（无 vs A3）。先把 embed/generator 换成真实后端再跑。",
+  "common": {
+    "corpus": "data/corpus.jsonl",
+    "questions": "data/questions.jsonl",
+    "background": "data/background.jsonl",
+    "k": 5,
+    "chunker": "fixed512",
+    "embed_backend": "local",
+    "embed_model": "BAAI/bge-small-zh-v1.5",
+    "generator": "api",
+    "llm_model": "deepseek-chat",
+    "llm_base_url": "https://api.deepseek.com"
+  },
+  "conditions": [
+    {"id": "A_defect_unfixed_clean", "attack": "none"},
+    {"id": "B_defect_unfixed_attack", "attack": "A3", "n_inject": 5},
+    {"id": "C_defect_fixed_clean", "attack": "none",
+     "as_of": "fact", "unknown_dates": "reject"},
+    {"id": "D_defect_fixed_attack", "attack": "A3", "n_inject": 5,
+     "as_of": "fact", "unknown_dates": "reject"}
+  ],
+  "deq": ["A_defect_unfixed_clean", "B_defect_unfixed_attack",
+          "C_defect_fixed_clean", "D_defect_fixed_attack"]
+}
