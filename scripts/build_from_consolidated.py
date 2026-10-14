@@ -156,6 +156,40 @@ def collapse_sandwiched_runs(runs: list[dict]) -> tuple[list[dict], list[dict]]:
     return runs, dropped
 
 
+def write_snapshot_diffs(snaps: list[tuple[str, str, str, dict]],
+                         diffs_dir: Path) -> list[tuple[str, int]]:
+    """把每次修正相对上一份合订本的改动（相邻对比）写成逐条明细 CSV。
+
+    每行：条号 / 变更类型（修改|新增|废止）/ 旧文本 / 新文本。
+    """
+    diffs_dir.mkdir(parents=True, exist_ok=True)
+    written: list[tuple[str, int]] = []
+    for i in range(1, len(snaps)):
+        key, eff, label, snap = snaps[i]
+        prev = snaps[i - 1][3]
+        rows = []
+        for aid in sorted(set(snap) | set(prev), key=art_key):
+            old, new = prev.get(aid), snap.get(aid)
+            if old == new:
+                continue
+            if old is None:
+                kind = "新增"
+            elif new is None:
+                kind = "废止（删去）"
+            else:
+                kind = "修改"
+            rows.append({"article_id": aid, "变更": kind,
+                         "旧文本": old or "", "新文本": new or ""})
+        if rows:
+            path = diffs_dir / f"{eff}_{label}.csv"
+            with open(path, "w", encoding="utf-8", newline="") as f:
+                w = csv.DictWriter(f, fieldnames=["article_id", "变更", "旧文本", "新文本"])
+                w.writeheader()
+                w.writerows(rows)
+            written.append((path.name, len(rows)))
+    return written
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="合订本 -> 项目语料格式")
     ap.add_argument("--src", type=Path, default=PROJECT / "data",
@@ -435,6 +469,24 @@ def main() -> None:
         w.writeheader()
         w.writerows(changes_rows)
 
+    # 每次修正的逐条改动明细（旧文本 vs 新文本），供人工核对
+    diffs_dir = der_dir / "diffs"
+    written_diffs = write_snapshot_diffs(snaps, diffs_dir)
+    diffs_readme = [
+        "# 每次修正的改动明细（相邻对比）",
+        "",
+        "每个 CSV = 某份合订本相对上一份的差异，即**那次修正改了什么**：",
+        "列：`article_id` / `变更`（修改|新增|废止）/ `旧文本` / `新文本`。",
+        "",
+        "例：`2024-03-01_刑法修正案（十二）.csv` = 修正案十二改动的条文，",
+        "旧文本与新文本并排，可直接核对。",
+        "",
+        "文件清单：",
+    ]
+    for name, n in written_diffs:
+        diffs_readme.append(f"* `{name}` —— {n} 条改动")
+    (diffs_dir / "README.md").write_text("\n".join(diffs_readme) + "\n", encoding="utf-8")
+
     with open(der_dir / "anomalies.csv", "w", encoding="utf-8", newline="") as f:
         fields = ["article_id", "snapshot", "effective_date", "label",
                   "reason", "text_head"]
@@ -475,6 +527,8 @@ def main() -> None:
     print(f"  {raw_dir / 'README.md'}              目录说明（怎么对比/基线）")
     print(f"  {der_dir / 'article_versions.jsonl'}   全量版本表（{len(versions)} 版本）")
     print(f"  {der_dir / 'changes.csv'}              逐快照原始 diff")
+    print(f"  {diffs_dir}/               每次修正的逐条改动明细"
+          f"（{len(written_diffs)} 个文件）")
     print(f"  {der_dir / 'anomalies.csv'}            源数据瑕疵（{len(anomalies)} 段）")
     print(f"  {der_dir / 'targets_candidates.csv'}   选题池（{n_pen} 条刑档变化）")
     print(f"  {bg_path}   背景层 {len(bg_rows)} 条现行条文")
