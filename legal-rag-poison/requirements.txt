@@ -1,8 +1,0 @@
-# 冒烟自检（--embed-backend mock --generator mock）与全部 API 模式
-# 都不需要任何第三方包，标准库即可运行。
-#
-# 本地向量模型（推荐，CPU 可跑；也可改成 --embed-backend api）：
-sentence-transformers>=2.7
-
-# 可选：装了会加速检索（没装自动退回纯 Python 点积）
-# numpy

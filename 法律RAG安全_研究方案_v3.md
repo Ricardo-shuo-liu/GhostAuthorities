@@ -277,7 +277,7 @@ ASR vs 注入文档数（1/2/5/10/20/50）。
 |---|---|---|
 | `experiments/e0_toy.py` | 本工作区 | E0 玩具验证，直接改法条列表即可用 |
 | `分步实施手册.md` | 本工作区 | victim RAG 各模块（retrieval / verify / victim / llm）代码骨架 |
-| `legal-rag-poison/setup.sh` | 本工作区 | Linux 环境脚本（conda + faiss + FlagEmbedding + vllm） |
+| `scripts/legacy_setup.sh` | 本工作区 | Linux 环境脚本（conda + faiss + FlagEmbedding + vllm；旧版，供参考） |
 | **FiscalQA Pro 的索引构造** | arXiv 2608.09393 | 每条文取 first/median/last 三 chunk + dense/BM25 的 RRF 融合，直接照抄 |
 | NormBench 的 defeater depth 定义 | github.com/AlexJJJChen/NormBench | 副轴 A5 的标注范式 |
 | LegalBench-RAG | Pipitone & Alami 2024 | 法域检索基座参考 |
