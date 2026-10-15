@@ -16,7 +16,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from .victim import CHUNKERS, ArticleVersion, Doc, Embedder
+from .victim import CHUNKERS, ArticleVersion, Doc, Embedder, parse_cite
+from .common import article_header
 
 
 def _date_i(d: Optional[str], default: int) -> int:
@@ -58,7 +59,9 @@ class ChromaIndex:
                 if background:
                     meta["background"] = True
                 docs.append(Doc(
-                    doc_id=f"{v.version_id}#{i}", text=c, version_id=v.version_id,
+                    doc_id=f"{v.version_id}#{i}",
+                    text=f"{article_header(v.article_id)}{c}",
+                    version_id=v.version_id,
                     article_id=v.article_id, effective_from=v.effective_from,
                     effective_to=v.effective_to, injected=False, meta=meta))
         self.add_docs(docs)
@@ -97,32 +100,55 @@ class ChromaIndex:
         return int(self.col.count())
 
     def search(self, query: str, k: int = 5, as_of: Optional[str] = None,
-               unknown_dates: str = "reject") -> list[tuple[Doc, float]]:
+               unknown_dates: str = "reject",
+               cite_filter: bool = True) -> list[tuple[Doc, float]]:
         n = self.count()
         if n == 0:
             return []
-        q = self.embedder.encode([query])[0]
+        q = self.embedder.encode_queries([query])[0]
         fetch = min(n, max(k, 1))
+
+        cite = parse_cite(query) if cite_filter else None
+
+        def run(extra: list[dict], use_cite: bool = True) -> list[tuple[Doc, float]]:
+            conds = ([{"article_id": cite}] if (cite and use_cite) else []) + extra
+            where = None
+            if len(conds) == 1:
+                where = conds[0]
+            elif conds:
+                where = {"$and": conds}
+            res = self._query(q, fetch, where)
+            return self._hits(res)
+
         if as_of is None:
-            res = self.col.query(query_embeddings=[q], n_results=fetch,
-                                 include=["distances"])
-            return self._hits(res)[:k]
+            hits = run([])
+            if cite and not hits:          # 该条文不在库里 → 退回全库检索
+                hits = run([], use_cite=False)
+            return hits[:k]
 
         di = _date_i(as_of, 0)
-        where = {"$and": [
-            {"has_date": 1},
-            {"eff_from_i": {"$lte": di}},
-            {"eff_to_i": {"$gte": di}},
-        ]}
-        hits = self._hits(self.col.query(
-            query_embeddings=[q], n_results=fetch, where=where,
-            include=["distances"]))
+        date_conds = [{"has_date": 1}, {"eff_from_i": {"$lte": di}},
+                      {"eff_to_i": {"$gte": di}}]
+        hits = run(date_conds)
         if unknown_dates == "accept":
-            hits += self._hits(self.col.query(
-                query_embeddings=[q], n_results=fetch, where={"has_date": 0},
-                include=["distances"]))
+            hits += run([{"has_date": 0}])
+            hits.sort(key=lambda x: -x[1])
+        if cite and not hits:              # 该条文不在库里 → 退回全库检索
+            hits = run(date_conds, use_cite=False)
+            if unknown_dates == "accept":
+                hits += run([{"has_date": 0}], use_cite=False)
             hits.sort(key=lambda x: -x[1])
         return hits[:k]
+
+    def _query(self, q: list[float], n_results: int, where: Optional[dict]) -> dict:
+        """query 的安全封装：过滤后候选不足时逐级下调 n_results（兼容不同 Chroma 版本）。"""
+        for nr in range(n_results, 0, -1):
+            try:
+                return self.col.query(query_embeddings=[q], n_results=nr,
+                                      where=where, include=["distances"])
+            except Exception:
+                continue
+        return {"ids": [[]], "distances": [[]]}
 
     def _hits(self, res: dict) -> list[tuple[Doc, float]]:
         ids = (res.get("ids") or [[]])[0]

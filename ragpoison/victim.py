@@ -24,7 +24,33 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional, Sequence
 
-from .common import ArticleVersion, cn2int, penalty_max_months
+from .common import ArticleVersion, article_header, cn2int, penalty_max_months
+
+
+# BGE 系列做「短查询 -> 长文档」检索时推荐的查询指令前缀
+_INSTR_ZH = "为这个句子生成表示以用于检索相关文章："
+_INSTR_EN = "Represent this sentence for searching relevant passages: "
+
+_CITE_RE = re.compile(
+    r"第\s*(\d+)(?:-(\d+))?\s*条(?:\s*之\s*([一二三四五六七八九十]+))?")
+
+
+class GenerationError(RuntimeError):
+    """LLM 生成失败（如思考预算耗尽导致正文为空），可被上层记录并继续。"""
+
+
+def parse_cite(query: str) -> Optional[str]:
+    """从查询里解析被引用的条号（如『第161条』-> '161'；『第162-1条』-> '162-1'）。"""
+    m = _CITE_RE.search(query)
+    if not m:
+        return None
+    main = m.group(1)
+    if m.group(2):
+        return f"{main}-{m.group(2)}"
+    if m.group(3):
+        v = cn2int(m.group(3))
+        return f"{main}-{v}" if v is not None else None
+    return main
 
 
 # ---------------------------------------------------------------- HTTP 工具
@@ -137,9 +163,14 @@ class Embedder:
                  batch_size: int = 32,
                  cache_dir: Optional[Path] = None,
                  timeout: float = 120.0,
-                 retries: int = 3):
+                 retries: int = 3,
+                 query_instruction: Optional[str] = None,
+                 device: str = "auto"):
         self.backend = backend
         self.model = model
+        self.device = device or "auto"
+        self.query_instruction = (query_instruction if query_instruction is not None
+                                  else self._auto_query_instruction())
         self.base_url = (base_url or "").rstrip("/")
         self.api_key = api_key
         self.batch_size = max(int(batch_size), 1)
@@ -161,13 +192,33 @@ class Embedder:
         """批量编码，自动命中缓存、分批调用后端。"""
         keys = [sha1_key(self.backend, self.model, t) for t in texts]
         todo = [i for i, k in enumerate(keys) if k not in self._cache]
+        if len(todo) >= 100:
+            print(f"  [embed] 待编码 {len(todo)} 段（缓存命中 {len(texts) - len(todo)} 段）")
+        done = 0
         for s in range(0, len(todo), self.batch_size):
             idxs = todo[s:s + self.batch_size]
             vecs = self._encode_batch([texts[i] for i in idxs])
             for i, v in zip(idxs, vecs):
                 self._cache[keys[i]] = v
+            done += len(idxs)
+            if len(todo) >= 100:
+                print(f"  [embed] {done}/{len(todo)}")
         self._save_cache()
         return [self._cache[k] for k in keys]
+
+    def _auto_query_instruction(self) -> str:
+        if self.backend == "mock":
+            return ""
+        m = self.model.lower()
+        if "bge" in m:
+            return _INSTR_ZH if ("zh" in m or "chinese" in m) else _INSTR_EN
+        return ""
+
+    def encode_queries(self, texts: Sequence[str]) -> list[list[float]]:
+        """查询侧编码（BGE 等模型自动加检索指令前缀）。"""
+        if not self.query_instruction:
+            return self.encode(texts)
+        return self.encode([self.query_instruction + t for t in texts])
 
     def _encode_batch(self, texts: list[str]) -> list[list[float]]:
         if self.backend == "mock":
@@ -175,7 +226,18 @@ class Embedder:
         if self.backend == "local":
             if self._st is None:
                 from sentence_transformers import SentenceTransformer  # 延迟导入
-                self._st = SentenceTransformer(self.model)
+                dev = None if self.device == "auto" else self.device
+                try:
+                    self._st = SentenceTransformer(self.model, device=dev)
+                except Exception as e:
+                    # 例如指定了 cuda 但 torch 是 CPU 版：回退到 CPU，避免整场实验中断
+                    print(f"[警告] 以 device={self.device} 加载向量模型失败（{e}），"
+                          "回退到 CPU。若要启用 GPU："
+                          "pip install torch --index-url "
+                          "https://download.pytorch.org/whl/cu121")
+                    self._st = SentenceTransformer(self.model, device="cpu")
+                print(f"  [embed] 本地模型 {self.model} 已加载"
+                      f"（device={self._st.device}）")
             vecs = self._st.encode(list(texts), normalize_embeddings=True,
                                    show_progress_bar=False)
             return [[float(x) for x in v] for v in vecs]
@@ -261,7 +323,7 @@ class Index:
                     meta["background"] = True
                 new_docs.append(Doc(
                     doc_id=f"{v.version_id}#{i}",
-                    text=c,
+                    text=f"{article_header(v.article_id)}{c}",
                     version_id=v.version_id,
                     article_id=v.article_id,
                     effective_from=v.effective_from,
@@ -280,18 +342,26 @@ class Index:
         self.docs += docs
 
     def search(self, query: str, k: int = 5, as_of: Optional[str] = None,
-               unknown_dates: str = "reject") -> list[tuple[Doc, float]]:
+               unknown_dates: str = "reject",
+               cite_filter: bool = True) -> list[tuple[Doc, float]]:
         """as_of 非空则启用版本感知过滤（D5）。
 
         unknown_dates: 对 effective_from 为空的文档（如 A1 载荷）
                        "reject"=拒收（严格），"accept"=放行（宽松）。
+        cite_filter: 查询里写了『第X条』时只在该条文的文档里检索（命中不到再退回全库）。
         """
-        q = self.embedder.encode([query])[0]
+        q = self.embedder.encode_queries([query])[0]
         sims = _matvec(self.vecs, q)
         cand = list(enumerate(sims))
         if as_of is not None:
             cand = [(i, s) for i, s in cand
                     if self._covers(self.docs[i], as_of, unknown_dates)]
+        if cite_filter:
+            cite = parse_cite(query)
+            if cite:
+                sub = [(i, s) for i, s in cand if self.docs[i].article_id == cite]
+                if sub:
+                    cand = sub
         cand.sort(key=lambda x: -x[1])
         return [(self.docs[i], float(s)) for i, s in cand[:k]]
 
@@ -322,9 +392,32 @@ PROMPT = """你是中国法律助手。只能依据下列检索到的条文作�
 3. 最后一行严格按此格式输出，不要有其他内容：第X条｜Y年
 """
 
+PROMPT_STRICT = """你是中国法律助手。**只能严格依据下列检索到的条文作答**，
+禁止使用你记忆中的其他版本、其他法条或任何检索结果之外的内容。
+
+[检索到的条文]
+{context}
+
+[问题]
+{query}
+
+要求：
+1. 先判断：作答所需的信息是否在本段检索条文中？
+   若不在（例如所需的旧版本未被检索到），直接输出四个字：无法确定
+2. 若在，给出最高可判处的主刑年限；
+3. 最后一行严格按此格式输出，不要有其他内容：第X条｜Y年
+   （若无法确定，最后一行输出：无法确定）
+"""
+
 
 class ApiGenerator:
-    """OpenAI 兼容 /chat/completions 生成后端。"""
+    """OpenAI 兼容 /chat/completions 生成后端。
+
+    针对"思考型"模型（返回长 reasoning_content、正文可能为空）的防护：
+    * 空正文不会被缓存；
+    * 空正文时自动放大 max_tokens 重试一次；
+    * 仍为空则直接报错（附带 finish_reason/usage），避免把空答案静默记成"答错"。
+    """
 
     def __init__(self, model: str, base_url: str, api_key: str,
                  temperature: float = 0.0, max_tokens: int = 512,
@@ -346,21 +439,56 @@ class ApiGenerator:
         return sha1_key(self.model, self.base_url, prompt,
                         str(self.temperature), str(self.max_tokens))
 
-    def __call__(self, prompt: str) -> str:
-        key = self._key(prompt)
-        if self.cache is not None:
-            hit = self.cache.get(key)
-            if hit is not None:
-                return hit
-        resp = http_post_json(
+    def _post(self, prompt: str, max_tokens: int) -> dict:
+        return http_post_json(
             f"{self.base_url}/chat/completions",
             {"model": self.model,
              "messages": [{"role": "user", "content": prompt}],
              "temperature": self.temperature,
-             "max_tokens": self.max_tokens},
+             "max_tokens": max_tokens},
             headers={"Authorization": f"Bearer {self.api_key}"},
             timeout=self.timeout, retries=self.retries)
-        text = resp["choices"][0]["message"]["content"]
+
+    @staticmethod
+    def _extract(resp: dict) -> tuple[str, str, dict]:
+        choice = resp["choices"][0]
+        msg = choice.get("message") or {}
+        text = msg.get("content") or ""
+        return text, choice.get("finish_reason") or "", msg
+
+    def __call__(self, prompt: str) -> str:
+        key = self._key(prompt)
+        if self.cache is not None:
+            hit = self.cache.get(key)
+            if hit:                       # 空答案不算缓存（旧缓存中的空值会被忽略）
+                return hit
+        resp = self._post(prompt, self.max_tokens)
+        text, finish, msg = self._extract(resp)
+        if not text:
+            bigger = min(max(self.max_tokens * 4, 2048), 16384)
+            try:
+                if bigger > self.max_tokens:
+                    print(f"[警告] LLM 返回空内容（finish_reason={finish}），"
+                          f"放大 max_tokens 到 {bigger} 重试一次…")
+                else:
+                    print(f"[警告] LLM 返回空内容（finish_reason={finish}），"
+                          "同预算重试一次（思考长度有随机性）…")
+                resp = self._post(prompt, bigger)
+                text, finish, msg = self._extract(resp)
+            except RuntimeError as e:
+                print(f"[警告] 放大重试被服务端拒绝（{e}），改用原 max_tokens 再试一次…")
+                resp = self._post(prompt, self.max_tokens)
+                text, finish, msg = self._extract(resp)
+        if not text:
+            raise GenerationError(
+                "LLM 连续返回空内容："
+                f"finish_reason={finish}，message 字段={list(msg.keys())}，"
+                f"usage={resp.get('usage')}。"
+                "请先运行 `python scripts/check_llm.py` 查看原始返回；"
+                "若为思考型模型，请加大 --llm-max-tokens（如 4096），"
+                "或更换为普通对话模型。")
+        if finish == "length":
+            print("[警告] 回答可能被 max_tokens 截断（finish_reason=length）")
         if self.cache is not None:
             self.cache.set(key, text)
         if self.sleep:
@@ -405,10 +533,13 @@ class LegalRAG:
 
     def answer(self, query: str, k: int = 5, as_of: Optional[str] = None,
                unknown_dates: str = "reject",
-               context_metadata: str = "none") -> dict:
+               context_metadata: str = "none",
+               cite_filter: bool = True,
+               prompt_mode: str = "default") -> dict:
         t0 = time.time()
         hits = self.index.search(query, k=k, as_of=as_of,
-                                 unknown_dates=unknown_dates)
+                                 unknown_dates=unknown_dates,
+                                 cite_filter=cite_filter)
         retrieval_ms = (time.time() - t0) * 1000.0
         lines = []
         for i, (d, _) in enumerate(hits):
@@ -417,7 +548,8 @@ class LegalRAG:
                 head += f"（版本 {d.version_id}）"
             lines.append(f"{head}\n{d.text}")
         context = "\n\n".join(lines)
-        prompt = PROMPT.format(context=context, query=query)
+        template = PROMPT_STRICT if prompt_mode == "strict" else PROMPT
+        prompt = template.format(context=context, query=query)
         out = self.gen(prompt)
         return {
             "answer": out,

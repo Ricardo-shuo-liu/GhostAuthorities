@@ -118,6 +118,9 @@ class Question:
     attack_target_version_id: Optional[str] = None  # 攻击者希望系统采纳的错误版本
     attack_direction: Optional[str] = None          # "to_old" / "to_new"
     group: Optional[str] = None                   # 题组：G1 旧行为·新审判 / G2 新行为·新审判 / G3 旧行为·旧审判
+    bank: Optional[str] = None                    # E1 题库：old=需要旧版（过期）数据 / new=需要现行（实效）数据
+    scenario: Optional[str] = None                # 情形类型：旧行为旧审判 / 旧行为新审判 / 新行为新审判 / 持续犯跨法
+    note: Optional[str] = None                    # 出题依据（第12条哪一款/哪种情形），供人工核对
 
     def to_dict(self):
         return asdict(self)
@@ -181,6 +184,11 @@ def check_corpus(rows: list[ArticleVersion]) -> list[str]:
                 problems.append(
                     f"{aid}: 版本区间不连续 {a.effective_to} -> {b.effective_from}")
     return problems
+
+
+def article_header(article_id: str) -> str:
+    """检索文档的统一抬头（与题面里的『第X条』写法一致，便于命中条号）。"""
+    return f"第{article_id}条 "
 
 
 def _next_day(d: str) -> str:

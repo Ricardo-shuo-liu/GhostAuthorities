@@ -37,9 +37,11 @@ from ragpoison.attack import (a1_bare_injection, a2_metadata_forge, a3_duplicate
                               a4_secondary_citation, b1_random, b2_forged)
 from ragpoison.chroma_index import make_index
 from ragpoison.common import load_corpus, load_questions
+from ragpoison.env import load_dotenv
 from ragpoison.evaluate import accuracy, asr, extract_prediction
-from ragpoison.victim import (ApiGenerator, Doc, Embedder, JsonlCache,
-                              LegalRAG, MockGenerator, verify_citation)
+from ragpoison.victim import (ApiGenerator, Doc, Embedder, GenerationError,
+                              JsonlCache, LegalRAG, MockGenerator,
+                              verify_citation)
 
 
 def parse_args() -> argparse.Namespace:
@@ -58,6 +60,10 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--context-metadata", default="none",
                     choices=["none", "version_id"],
                     help="检索上下文里是否暴露版本号/日期（实验变量，默认不暴露）")
+    ap.add_argument("--cite-filter", default="on", choices=["on", "off"],
+                    help="查询里写了『第X条』时只在该条文的文档内检索（默认 on；off=纯语义检索）")
+    ap.add_argument("--prompt-mode", default="default", choices=["default", "strict"],
+                    help="strict=禁止使用记忆、只依据检索条文（用于量化记忆效应）")
 
     ap.add_argument("--attack", default="none",
                     choices=["none", "A1", "A2", "A3", "A4", "B1", "B2"])
@@ -75,10 +81,13 @@ def parse_args() -> argparse.Namespace:
 
     ap.add_argument("--embed-backend", default="local",
                     choices=["local", "api", "mock"])
-    ap.add_argument("--embed-model", default="BAAI/bge-small-zh-v1.5")
+    ap.add_argument("--embed-model",
+                    default=os.environ.get("EMBED_MODEL", "BAAI/bge-small-zh-v1.5"))
     ap.add_argument("--embed-base-url", default=None)
     ap.add_argument("--embed-api-key-env", default="EMBED_API_KEY")
     ap.add_argument("--embed-batch", type=int, default=32)
+    ap.add_argument("--embed-device", default=os.environ.get("EMBED_DEVICE", "auto"),
+                    help="本地向量模型的设备：auto / cpu / cuda:0（GPU 可加 --embed-batch 128）")
 
     ap.add_argument("--index-backend", default="chroma",
                     choices=["chroma", "memory"],
@@ -89,11 +98,14 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--chroma-batch", type=int, default=256)
 
     ap.add_argument("--generator", default="api", choices=["api", "mock"])
-    ap.add_argument("--llm-model", default="deepseek-chat")
-    ap.add_argument("--llm-base-url", default="https://api.deepseek.com")
+    ap.add_argument("--llm-model", default=os.environ.get("LLM_MODEL", "deepseek-chat"))
+    ap.add_argument("--llm-base-url",
+                    default=os.environ.get("LLM_BASE_URL", "https://api.deepseek.com"))
     ap.add_argument("--llm-api-key-env", default="LLM_API_KEY")
     ap.add_argument("--llm-temperature", type=float, default=0.0)
-    ap.add_argument("--llm-max-tokens", type=int, default=512)
+    ap.add_argument("--llm-max-tokens",
+                    type=int, default=int(os.environ.get("LLM_MAX_TOKENS", "2048")),
+                    help="单次回答上限（思考型模型建议 4096+；默认 2048）")
     ap.add_argument("--llm-timeout", type=float, default=120.0)
     ap.add_argument("--llm-retries", type=int, default=3)
     ap.add_argument("--sleep", type=float, default=0.0,
@@ -106,15 +118,17 @@ def parse_args() -> argparse.Namespace:
 
 
 def load_done_qids(answers_path: Path) -> set[str]:
-    done: set[str] = set()
+    """已完成的题（生成失败的会排除，方便续跑时自动补做）。"""
+    done: dict[str, bool] = {}
     if answers_path.exists():
         with open(answers_path, "r", encoding="utf-8") as f:
             for line in f:
                 try:
-                    done.add(json.loads(line)["qid"])
+                    r = json.loads(line)
+                    done[r["qid"]] = bool(r.get("gen_failed"))
                 except Exception:
                     continue
-    return done
+    return {q for q, failed in done.items() if not failed}
 
 
 def build_payloads(args: argparse.Namespace, corpus, questions) -> list[Doc]:
@@ -158,6 +172,9 @@ def build_payloads(args: argparse.Namespace, corpus, questions) -> list[Doc]:
 
 
 def main() -> None:
+    loaded = load_dotenv()
+    if loaded:
+        print(f"[.env] 已加载：{', '.join(sorted(loaded))}")
     args = parse_args()
     args.outdir.mkdir(parents=True, exist_ok=True)
     cache_dir = args.outdir / "cache"
@@ -178,16 +195,19 @@ def main() -> None:
         backend=args.embed_backend, model=args.embed_model,
         base_url=args.embed_base_url,
         api_key=os.environ.get(args.embed_api_key_env, ""),
-        batch_size=args.embed_batch, cache_dir=cache_dir)
+        batch_size=args.embed_batch, cache_dir=cache_dir,
+        device=args.embed_device)
     index = make_index(
         args.index_backend, embedder,
         chroma_path=(args.chroma_path or (args.outdir / "chroma")),
         collection_name=args.chroma_collection)
+    print(f"构建索引（{args.index_backend}，先编码语料）…")
     index.build(corpus, chunker=args.chunker)
     if args.background:
         background = load_corpus(args.background)
         index.add_versions(background, chunker=args.chunker, background=True)
         print(f"背景语料 {len(background)} 个版本（只做检索干扰，不出题）")
+    print(f"索引就绪：{len(index.docs)} 个文档块")
 
     # ---------- 注入 ----------
     payloads = build_payloads(args, corpus, questions)
@@ -221,6 +241,7 @@ def main() -> None:
     if done:
         print(f"续跑：已完成 {len(done)} 题，跳过")
     with open(answers_path, "a", encoding="utf-8") as fout:
+        print(f"开始逐题调用（共 {len(questions)} 题，每 5 题打印一次进度）")
         for i, q in enumerate(questions):
             if q.qid in done:
                 continue
@@ -230,9 +251,18 @@ def main() -> None:
             elif args.as_of == "trial":
                 as_of = q.trial_date
             t0 = time.time()
-            out = rag.answer(q.query, k=args.k, as_of=as_of,
-                             unknown_dates=args.unknown_dates,
-                             context_metadata=args.context_metadata)
+            gen_failed, gen_error = False, None
+            try:
+                out = rag.answer(q.query, k=args.k, as_of=as_of,
+                                 unknown_dates=args.unknown_dates,
+                                 context_metadata=args.context_metadata,
+                                 cite_filter=(args.cite_filter == "on"),
+                                 prompt_mode=args.prompt_mode)
+            except GenerationError as e:
+                gen_failed, gen_error = True, str(e)[:300]
+                out = {"answer": "", "retrieved": [], "retrieved_versions": [],
+                       "retrieval_ms": 0.0}
+                print(f"  [跳过] {q.qid} 生成失败（已记录，继续）：{gen_error[:100]}")
             total_ms = (time.time() - t0) * 1000.0
             pred = extract_prediction(out["answer"])
 
@@ -255,9 +285,13 @@ def main() -> None:
                     "embed_backend": args.embed_backend,
                     "embed_model": args.embed_model,
                     "index_backend": args.index_backend,
+                    "cite_filter": args.cite_filter,
+                    "prompt_mode": args.prompt_mode,
                 },
                 "article_id": q.article_id,
                 "group": q.group,
+                "bank": q.bank,
+                "scenario": q.scenario,
                 "fact_date": q.fact_date,
                 "trial_date": q.trial_date,
                 "query": q.query,
@@ -270,6 +304,8 @@ def main() -> None:
                 "correct": accuracy([{"pred": pred, "gold_nuggets": q.gold_nuggets}]),
                 "citation_ok": verify_citation(out["answer"], known_articles),
                 "answer": out["answer"],
+                "gen_failed": gen_failed,
+                "gen_error": gen_error,
                 "retrieved": out["retrieved"],
                 "retrieved_versions": retrieved_versions,
                 "gold_in_topk": q.gold_version_id in retrieved_versions,
@@ -284,16 +320,18 @@ def main() -> None:
             }
             fout.write(json.dumps(record, ensure_ascii=False) + "\n")
             fout.flush()
-            if (i + 1) % 20 == 0 or i + 1 == len(questions):
+            if (i + 1) % 5 == 0 or i + 1 == len(questions):
                 print(f"  进度 {i+1}/{len(questions)}")
 
     # ---------- 汇总 ----------
-    records = []
+    records_by_qid: dict[str, dict] = {}
     with open(answers_path, "r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if line:
-                records.append(json.loads(line))
+                r = json.loads(line)
+                records_by_qid[r["qid"]] = r      # 同一题重跑时以最新记录为准
+    records = list(records_by_qid.values())
     n = len(records)
     acc = accuracy([{"pred": r["pred"], "gold_nuggets": r["gold_nuggets"]}
                     for r in records])
@@ -306,9 +344,12 @@ def main() -> None:
         "generator": args.generator, "llm_model": args.llm_model,
         "embed_backend": args.embed_backend, "embed_model": args.embed_model,
         "index_backend": args.index_backend,
+        "cite_filter": args.cite_filter,
+        "prompt_mode": args.prompt_mode,
         "corpus": str(args.corpus),
         "background": str(args.background) if args.background else None,
         "n_inject": args.n_inject,
+        "n_gen_failed": sum(1 for r in records if r.get("gen_failed")),
         "accuracy": round(acc, 4), "error_rate": round(1 - acc, 4),
         "gold_in_topk_rate": round(
             sum(r["gold_in_topk"] for r in records) / n, 4),

@@ -10,11 +10,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
 
+from .env import load_dotenv
 from .victim import Embedder
+
+load_dotenv()   # 让 .env 里的 key/模型名对实验脚本与子进程生效
 
 ROOT = Path(__file__).resolve().parent.parent
 RUNNER = ROOT / "run_e0.py"
@@ -26,15 +30,36 @@ DATA = ROOT / "data"
 def add_pipeline_args(ap: argparse.ArgumentParser) -> None:
     ap.add_argument("--generator", default="api", choices=["api", "mock"],
                     help="大模型后端：默认 API（OpenAI 兼容）")
-    ap.add_argument("--llm-model", default="deepseek-chat")
-    ap.add_argument("--llm-base-url", default="https://api.deepseek.com")
+    ap.add_argument("--llm-model", default=os.environ.get("LLM_MODEL", "deepseek-chat"))
+    ap.add_argument("--llm-base-url",
+                    default=os.environ.get("LLM_BASE_URL", "https://api.deepseek.com"))
     ap.add_argument("--embed-backend", default="local",
                     choices=["local", "api", "mock"])
-    ap.add_argument("--embed-model", default="BAAI/bge-small-zh-v1.5")
+    ap.add_argument("--embed-model",
+                    default=os.environ.get("EMBED_MODEL", "BAAI/bge-small-zh-v1.5"))
+    ap.add_argument("--embed-base-url", default=None,
+                    help="embed-backend=api 时的 OpenAI 兼容地址")
+    ap.add_argument("--llm-api-key-env", default="LLM_API_KEY")
+    ap.add_argument("--llm-max-tokens",
+                    type=int, default=int(os.environ.get("LLM_MAX_TOKENS", "2048")))
+    ap.add_argument("--embed-api-key-env", default="EMBED_API_KEY")
+    ap.add_argument("--embed-device", default=os.environ.get("EMBED_DEVICE", "auto"),
+                    help="本地向量模型设备：auto / cpu / cuda:0")
+    ap.add_argument("--embed-batch", type=int, default=32,
+                    help="本地向量编码批大小（GPU 可调大到 128）")
+    ap.add_argument("--chunker", default="fixed512",
+                    choices=["fixed512", "fixed512o", "article"])
+    ap.add_argument("--llm-temperature", type=float, default=0.0)
+    ap.add_argument("--sleep", type=float, default=0.0,
+                    help="每次 LLM 调用后的固定间隔秒数（限速用）")
     ap.add_argument("--index-backend", default="chroma",
                     choices=["chroma", "memory"],
                     help="RAG 向量库：默认 chromadb")
     ap.add_argument("--k", type=int, default=5)
+    ap.add_argument("--cite-filter", default="on", choices=["on", "off"],
+                    help="查询带『第X条』时只在该条文文档内检索（默认 on）")
+    ap.add_argument("--prompt-mode", default="default", choices=["default", "strict"],
+                    help="strict=禁止使用记忆、只依据检索条文（用于量化记忆效应）")
     ap.add_argument("--limit", type=int, default=0, help="只跑前 N 题（冒烟用）")
     ap.add_argument("--outroot", type=Path, default=None)
     ap.add_argument("--mock", action="store_true",
@@ -47,8 +72,21 @@ def pipeline_args(a: argparse.Namespace) -> list[str]:
                 "--index-backend", "memory"]
     args = ["--generator", a.generator,
             "--llm-model", a.llm_model, "--llm-base-url", a.llm_base_url,
+            "--llm-api-key-env", a.llm_api_key_env,
+            "--llm-max-tokens", str(a.llm_max_tokens),
             "--embed-backend", a.embed_backend, "--embed-model", a.embed_model,
-            "--index-backend", a.index_backend]
+            "--embed-api-key-env", a.embed_api_key_env,
+            "--embed-device", a.embed_device,
+            "--embed-batch", str(a.embed_batch),
+            "--chunker", a.chunker,
+            "--llm-temperature", str(a.llm_temperature),
+            "--sleep", str(a.sleep),
+            "--index-backend", a.index_backend,
+            "--cite-filter", a.cite_filter]
+    if a.prompt_mode != "default":
+        args += ["--prompt-mode", a.prompt_mode]
+    if a.embed_base_url:
+        args += ["--embed-base-url", a.embed_base_url]
     return args
 
 

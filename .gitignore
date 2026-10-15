@@ -1,4 +1,8 @@
 __pycache__/
 *.pyc
-results/
 data/toy/
+.env
+results/e1_half_poisoning/A_current_oldbank/cache/
+results/e1_half_poisoning/A_current_oldbank/chroma/
+results/e1_half_poisoning/A_current_newbank/cache/
+results/e1_half_poisoning/A_current_newbank/chroma/

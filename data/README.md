@@ -1,4 +1,4 @@
-数据来源：https://flk.npc.gov.cn/index
+数据来源：https://zh.wikisource.org/wiki/Wikisource:%E9%A6%96%E9%A1%B5
 
 本目录内容：
 
@@ -14,6 +14,9 @@
   * `background.jsonl`：最新合订本全量条文（检索背景层）。
 * 以下为 `python -m ragpoison.gold` 生成（题目与 gold）：
   * `corpus.jsonl`、`questions.jsonl`；`facts.example.json` 是档位表述示例。
+* `e1_questions/`：E1 题库（按《刑法》第 12 条划分为「需要过期数据」与
+  「需要实效数据」两个库），由
+  `experiments/e1_half_poisoning/generate_questions.py` 生成，说明见该目录 README。
 * `toy/`：离线自检用的虚构数据（由 `scripts/make_toy_data.py` 生成，可随时重建）。
 
 

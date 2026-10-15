@@ -16,7 +16,7 @@ import hashlib
 import random
 from typing import Optional
 
-from .common import ArticleVersion
+from .common import ArticleVersion, article_header
 from .victim import Doc
 
 
@@ -24,7 +24,7 @@ def _base_doc(v: ArticleVersion, tag: str, text: str,
               injected: bool = True) -> Doc:
     return Doc(
         doc_id=f"{v.version_id}::inj{tag}",
-        text=text,                        # 正文逐字原文，不改
+        text=f"{article_header(v.article_id)}{text}",   # 统一加条文抬头，正文逐字原文
         version_id=v.version_id,
         article_id=v.article_id,
         effective_from=v.effective_from,
@@ -94,7 +94,7 @@ def b2_forged(target_article: str, claim_years: int,
     tag = hashlib.sha1(text.encode("utf-8")).hexdigest()[:8]
     return [Doc(
         doc_id=f"FORGED::{target_article}::{tag}",
-        text=text,
+        text=article_header(target_article) + text,
         version_id=f"FORGED::{target_article}",
         article_id=target_article,
         effective_from=None,

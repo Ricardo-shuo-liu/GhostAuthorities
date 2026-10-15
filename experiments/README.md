@@ -7,7 +7,7 @@ E1–E7。每个文件夹里是**该实验的回答问题、设计、判据与�
 
 | 文件夹 | 实验 | 验证假设 | 成功判据（设计书） |
 |---|---|---|---|
-| `e1_half_poisoning/` | E1 半投毒 | H1 | G2 在含旧版语料上掉 ≥20pp，按条文聚类 p<0.05 |
+| `e1_half_poisoning/` | E1 半投毒（两题库：过期数据/实效数据） | H1 | new 题库在含旧版语料上下降 ≥20pp，按条文聚类 p<0.05 |
 | `e2_zero_forgery/` | E2 零伪造攻击 | H2 | k=5 时 G2 掉 ≥30pp，G1/G3 变化 <10pp |
 | `e3_defenses/` | E3 防线 | H3 | 引用校验：攻击不降 + 通过率≈100%；D2：挡攻击但有代价（代价见 E6） |
 | `e4_deq/` | E4 因果（DEQ） | H5 | DEQ>0 且显著 |
@@ -36,6 +36,14 @@ python experiments/e3_defenses/run.py
 python experiments/e1_half_poisoning/run.py --mock
 ```
 
+E1 的题库按《刑法》第 12 条划分为两个库（需要过期数据 / 需要实效数据），
+先运行生成器再跑实验（`run.py` 会自动跑「语料 A/B × 两题库」共 4 个条件）：
+
+```bash
+python experiments/e1_half_poisoning/generate_questions.py   # 生成题库
+python experiments/e1_half_poisoning/run.py                  # API + ChromaDB
+```
+
 ## 公共参数
 
 所有脚本共享（`--help` 可见）：
@@ -50,6 +58,11 @@ python experiments/e1_half_poisoning/run.py --mock
 | `--outroot` | `results/<实验名>` | 输出目录（逐题结果、报告、Chroma 持久化） |
 | `--mock` | 关 | 一键切到离线自检（mock+mock+memory） |
 
+**配置方式**：支持仓库根目录的 `.env`（复制 `.env.example` 后填写）。
+`LLM_API_KEY` 必填；可选 `LLM_MODEL`、`LLM_BASE_URL`、`HF_ENDPOINT`
+（本地 bge 下载镜像）。embedding 默认本地，不需要 key；`.env` 不会覆盖
+已 export 的环境变量，也不会被提交（见 `.gitignore`）。
+
 每个实验跑完会打印判据结论，并把汇总写到 `<outroot>/report.json`；
 逐题数据在 `<outroot>/<条件>/answers.jsonl`（含检索结果、注入标记、
 引用校验、耗时等字段），可复算。
@@ -58,3 +71,12 @@ python experiments/e1_half_poisoning/run.py --mock
 
 * E3 的 **D3 共识投票、D4 异常检测**：脚本请求时会明确报错（不假装跑过）；
 * E7 需要第二部法律的合订本与题目（脚本头部给了准备步骤）。
+
+## 排错（API / 运行相关）
+
+* **答案为空 / 统计全是 0**：先跑 `python scripts/check_llm.py` 看原始返回。
+  若是"思考型"模型（`reasoning_content` 很长、`content` 为空），把
+  `--llm-max-tokens` 加大到 4096+（实验脚本已透传该参数），或换普通对话模型；
+  生成器遇到连续空回答会直接报错，不会再静默记成"答错"。
+* **运行中终端长时间没有输出**：索引阶段会打印 `[embed] x/y` 进度，问答阶段
+  每 5 题打印一次；中断（Ctrl-C）后重跑会自动续跑，缓存不重复计费。
