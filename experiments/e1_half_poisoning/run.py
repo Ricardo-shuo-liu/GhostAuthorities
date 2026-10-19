@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
-"""E1 — 半投毒：两个题库 × 两个语料（对应设计书 H1）
+"""E1 — 半投毒：题库 × 语料（对应设计书 H1）
 
-题库（由 generate_questions.py 生成，按《刑法》第 12 条划分）：
-  old —— 需要「过期数据」（2024 现行之前的旧版文本）的题；
-  new —— 需要「实效数据」（现行版本文本）的题（含新行为新审判、持续/连续犯跨法）。
+题库（generate_questions.py 生成；优先使用通过 admission_test.py 的 filtered/）：
+  old      需要「过期数据」（旧版文本）的题
+  new      需要「实效数据」（现行文本）的题
+  spanning 持续/连续犯跨法题 —— 独立分组，**不进入主判据**
 语料：
-  A 仅现行（= E1 阶段 A，只有 2024 版）；B 现行 + 旧版（半投毒状态）。
+  A 仅现行（只有 2024 版）；B 现行 + 旧版（半投毒状态）。
 
-跑法（4 个条件）：
-  A×old、A×new、B×old、B×new。
-判据（设计书 H1）：
-  1) A 上 old 题库准确率应≈0（语料里没有旧版文本，想对也没材料）
-     —— 注意 LLM 可能凭参数记忆答对，这可作为发现记录；
-  2) A→B 时 new 题库准确率下降 ≥20pp 且按条文聚类显著 → 「半投毒」成立。
+主判据（设计书 H1）：new 题库在 B 上比 A 显著下降 ≥20pp → 半投毒成立。
+说明：模型参数记忆是"常量"，不改变 A/B 差值；old 题库在 A 上偏高时，
+按"记忆覆盖率"如实报告（论文口径见 data/e1_questions/README.md）。
 
 用法（仓库根目录执行）：
-    python experiments/e1_half_poisoning/run.py            # API + ChromaDB
-    python experiments/e1_half_poisoning/run.py --mock     # 离线自检
+    python experiments/e1_half_poisoning/generate_questions.py     # 生成题库
+    python experiments/e1_half_poisoning/admission_test.py ...     # 入场过滤
+    python experiments/e1_half_poisoning/run.py --stage A          # 只跑 2024 语料
+    python experiments/e1_half_poisoning/run.py                    # A+B 全跑
 """
 from __future__ import annotations
 
@@ -51,19 +51,26 @@ def main() -> None:
     ap.add_argument("--banks-dir", type=Path, default=exp.DATA / "e1_questions")
     ap.add_argument("--stage", default="AB", choices=["A", "B", "AB"],
                     help="A=只用现行（2024）语料；B=含旧版语料；AB=全跑（默认）")
+    ap.add_argument("--banks", default="old,new,spanning",
+                    help="要跑的题库（逗号分隔）：old,new,spanning；"
+                         "只看 2024 语料下的 old/new 就用 --banks old,new")
     a = ap.parse_args()
 
-    banks = {
-        "old": a.banks_dir / "questions_old.jsonl",
-        "new": a.banks_dir / "questions_new.jsonl",
-    }
-    for name, p in banks.items():
-        if not p.exists():
-            raise SystemExit(
-                f"缺少 {name} 题库 {p}；先运行：\n"
-                f"  python experiments/e1_half_poisoning/generate_questions.py")
-    n_old, n_new = (len(load_bank(p)) for p in banks.values())
-    print(f"题库：old {n_old} 道 / new {n_new} 道")
+    filtered = a.banks_dir / "filtered"
+    bank_dir = filtered if (filtered / "questions_old.jsonl").exists() else a.banks_dir
+    if bank_dir is a.banks_dir:
+        print("[提示] 未找到 filtered/ 题库（未经过滤）；建议先跑 admission_test.py。"
+              "本次使用原始题库。")
+    wanted = [b.strip() for b in a.banks.split(",") if b.strip()]
+    banks: dict[str, Path] = {}
+    for name in wanted:
+        p = bank_dir / f"questions_{name}.jsonl"
+        if p.exists():
+            banks[name] = p
+        elif name in ("old", "new"):
+            raise SystemExit(f"缺少题库 {p}；先运行 generate_questions.py")
+    counts = {name: len(load_bank(p)) for name, p in banks.items()}
+    print("题库：", counts)
 
     corpus_a = exp.build_current_only_corpus(
         a.corpus, exp.DATA / "corpus_current_only.jsonl")
@@ -88,45 +95,50 @@ def main() -> None:
 
     acc = {cid: stats.accuracy(rs) for cid, rs in recs.items()}
     n_correct = {cid: sum(1 for r in rs if r.get("correct")) for cid, rs in recs.items()}
-    n_total = {cid: len(rs) for cid, rs in recs.items()}
     n_failed = {cid: sum(1 for r in rs if r.get("gen_failed")) for cid, rs in recs.items()}
 
     print(f"\n== E1 结果（准确率，stage={a.stage}）==")
-    print(f"{'语料':<14}{'old 题库':>16}{'new 题库':>16}")
+    print(f"{'语料':<16}{'old':>14}{'new':>14}{'spanning*':>14}")
     for cname, label in (("A_current", "A 仅现行(2024)"), ("B_full", "B 含旧版")):
-        if f"{cname}_oldbank" not in acc and f"{cname}_newbank" not in acc:
+        if f"{cname}_oldbank" not in acc:
             continue
         cells = []
-        for bname in ("old", "new"):
+        for bname in ("old", "new", "spanning"):
             cid = f"{cname}_{bname}bank"
-            cells.append(f"{acc[cid]:.3f} ({n_correct[cid]}/{n_total[cid]})"
+            cells.append(f"{acc[cid]:.3f} ({n_correct[cid]}/{len(recs[cid])})"
                          if cid in acc else "—")
-        print(f"{label:<14}{cells[0]:>16}{cells[1]:>16}")
+        print(f"{label:<16}{cells[0]:>14}{cells[1]:>14}{cells[2]:>14}")
     if any(n_failed.values()):
-        print("生成失败题数（已按答错计入，可重跑补齐）：",
+        print("生成失败题数（已按答错计，续跑会自动补做）：",
               {k: v for k, v in n_failed.items() if v})
+    print("* spanning = 持续/连续犯跨法题，独立分组，不参与 H1 判定")
 
-    report = {"experiment": EXP, "stage": a.stage,
-              "n_old_bank": n_old, "n_new_bank": n_new, "accuracy": acc,
-              "n_correct": n_correct, "n_total": n_total}
-    report["n_gen_failed"] = n_failed
-    if a.stage == "AB":
-        boot_new = stats.paired_cluster_bootstrap(recs["A_current_newbank"],
-                                                  recs["B_full_newbank"])
-        boot_old = stats.paired_cluster_bootstrap(recs["A_current_oldbank"],
-                                                  recs["B_full_oldbank"])
-        print(f"\nnew 题库 A→B 变化：{boot_new['delta']:+.3f} "
-              f"95%CI [{boot_new['lo']:+.3f}, {boot_new['hi']:+.3f}] p≈{boot_new['p']:.4f}")
-        print(f"old 题库 A→B 变化：{boot_old['delta']:+.3f} "
-              f"95%CI [{boot_old['lo']:+.3f}, {boot_old['hi']:+.3f}] p≈{boot_old['p']:.4f}")
-        h1 = boot_new["delta"] <= -0.20 and boot_new["p"] < 0.05
-        print(f"判定 H1（半投毒）：{'成立（new 题库在含旧版语料上显著下降 ≥20pp）' if h1 else '未达判据'}")
-        print(f"参考：old 题库在 A（仅现行）上准确率 = {acc['A_current_oldbank']:.3f}"
-              f"（设计预期≈0；偏高说明模型可能凭记忆作答，作为发现记录）")
-        report.update({"old_bank_A_to_B": boot_old, "new_bank_A_to_B": boot_new,
-                       "H1_pass": h1})
+    report = {"experiment": EXP, "stage": a.stage, "bank_dir": str(bank_dir),
+              "n_banks": counts, "accuracy": acc,
+              "n_correct": n_correct, "n_gen_failed": n_failed,
+              "note": "spanning excluded from H1 verdict"}
+    if a.stage == "AB" and "old" in banks and "new" in banks:
+        print()
+        for bname, label in (("new", "new 题库（主判据）"), ("old", "old 题库")):
+            boot = stats.paired_cluster_bootstrap(
+                recs[f"A_current_{bname}bank"], recs[f"B_full_{bname}bank"])
+            print(f"{label} A→B 变化：{boot['delta']:+.3f} "
+                  f"95%CI [{boot['lo']:+.3f}, {boot['hi']:+.3f}] p≈{boot['p']:.4f}")
+            report[f"{bname}_bank_A_to_B"] = boot
+        h1 = (report["new_bank_A_to_B"]["delta"] <= -0.20
+              and report["new_bank_A_to_B"]["p"] < 0.05)
+        report["H1_pass"] = h1
+        print(f"判定 H1（半投毒）："
+              f"{'成立（new 题库在含旧版语料上显著下降 ≥20pp）' if h1 else '未达判据'}")
+        if acc.get("A_current_oldbank", 0) > 0.2:
+            print(f"提示：old 题库在 A（无旧版文本）上准确率 "
+                  f"{acc['A_current_oldbank']:.3f} → 模型记忆贡献显著，"
+                  f"请在论文中按『记忆覆盖率』单独报告（详见题库 README）。")
     else:
-        print(f"\n（stage={a.stage}：只跑了部分条件，H1 判定需要 --stage AB）")
+        if a.stage == "AB":
+            print("\n（未跑 old+new 两库；H1 判定需要 --stage AB --banks old,new）")
+        else:
+            print(f"\n（stage={a.stage}：只跑了部分条件，H1 判定需要 --stage AB）")
 
     outroot = a.outroot or (exp.ROOT / "results" / EXP)
     outroot.mkdir(parents=True, exist_ok=True)

@@ -36,13 +36,22 @@ python experiments/e3_defenses/run.py
 python experiments/e1_half_poisoning/run.py --mock
 ```
 
-E1 的题库按《刑法》第 12 条划分为两个库（需要过期数据 / 需要实效数据），
-先运行生成器再跑实验（`run.py` 会自动跑「语料 A/B × 两题库」共 4 个条件）：
+E1 的题库按「测量仪器」八条标准生成（query 不含条号/法名/ISO 日期、
+单一行时间锚点、罪状叙述带区分性细节；跨法题独立分组），共三个库：
+`old`（需要过期数据）/ `new`（需要实效数据）/ `spanning`（持续/连续犯跨法，
+**不进主判据**）。完整流程：
 
 ```bash
-python experiments/e1_half_poisoning/generate_questions.py   # 生成题库
-python experiments/e1_half_poisoning/run.py                  # API + ChromaDB
+python experiments/e1_half_poisoning/generate_questions.py   # ① 生成题库
+python experiments/e1_half_poisoning/admission_test.py \     # ② 入场过滤
+    --llm-models deepseek-v4-flash,deepseek-chat
+python experiments/e1_half_poisoning/run.py --stage A        # ③ 只用 2024 语料
+python experiments/e1_half_poisoning/run.py                  # ④ A+B，给 H1 判定
 ```
+
+②的三道检验：关掉 cite-filter 的检索检验（gold 条文 top-1、版本 top-3）、
+oracle 预检（gold 文本入 context 能否机械抽出答案）、闭卷过滤（2 模型 × 2 采样
+全错才放行）。通过过滤的题库写入 `data/e1_questions/filtered/`，`run.py` 会自动优先使用。
 
 ## 公共参数
 

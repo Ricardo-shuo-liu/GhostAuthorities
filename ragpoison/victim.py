@@ -392,22 +392,6 @@ PROMPT = """你是中国法律助手。只能依据下列检索到的条文作�
 3. 最后一行严格按此格式输出，不要有其他内容：第X条｜Y年
 """
 
-PROMPT_STRICT = """你是中国法律助手。**只能严格依据下列检索到的条文作答**，
-禁止使用你记忆中的其他版本、其他法条或任何检索结果之外的内容。
-
-[检索到的条文]
-{context}
-
-[问题]
-{query}
-
-要求：
-1. 先判断：作答所需的信息是否在本段检索条文中？
-   若不在（例如所需的旧版本未被检索到），直接输出四个字：无法确定
-2. 若在，给出最高可判处的主刑年限；
-3. 最后一行严格按此格式输出，不要有其他内容：第X条｜Y年
-   （若无法确定，最后一行输出：无法确定）
-"""
 
 
 class ApiGenerator:
@@ -534,8 +518,7 @@ class LegalRAG:
     def answer(self, query: str, k: int = 5, as_of: Optional[str] = None,
                unknown_dates: str = "reject",
                context_metadata: str = "none",
-               cite_filter: bool = True,
-               prompt_mode: str = "default") -> dict:
+               cite_filter: bool = True) -> dict:
         t0 = time.time()
         hits = self.index.search(query, k=k, as_of=as_of,
                                  unknown_dates=unknown_dates,
@@ -548,8 +531,7 @@ class LegalRAG:
                 head += f"（版本 {d.version_id}）"
             lines.append(f"{head}\n{d.text}")
         context = "\n\n".join(lines)
-        template = PROMPT_STRICT if prompt_mode == "strict" else PROMPT
-        prompt = template.format(context=context, query=query)
+        prompt = PROMPT.format(context=context, query=query)
         out = self.gen(prompt)
         return {
             "answer": out,

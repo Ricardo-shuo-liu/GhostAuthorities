@@ -58,8 +58,6 @@ def add_pipeline_args(ap: argparse.ArgumentParser) -> None:
     ap.add_argument("--k", type=int, default=5)
     ap.add_argument("--cite-filter", default="on", choices=["on", "off"],
                     help="查询带『第X条』时只在该条文文档内检索（默认 on）")
-    ap.add_argument("--prompt-mode", default="default", choices=["default", "strict"],
-                    help="strict=禁止使用记忆、只依据检索条文（用于量化记忆效应）")
     ap.add_argument("--limit", type=int, default=0, help="只跑前 N 题（冒烟用）")
     ap.add_argument("--outroot", type=Path, default=None)
     ap.add_argument("--mock", action="store_true",
@@ -83,8 +81,6 @@ def pipeline_args(a: argparse.Namespace) -> list[str]:
             "--sleep", str(a.sleep),
             "--index-backend", a.index_backend,
             "--cite-filter", a.cite_filter]
-    if a.prompt_mode != "default":
-        args += ["--prompt-mode", a.prompt_mode]
     if a.embed_base_url:
         args += ["--embed-base-url", a.embed_base_url]
     return args

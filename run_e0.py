@@ -62,8 +62,6 @@ def parse_args() -> argparse.Namespace:
                     help="检索上下文里是否暴露版本号/日期（实验变量，默认不暴露）")
     ap.add_argument("--cite-filter", default="on", choices=["on", "off"],
                     help="查询里写了『第X条』时只在该条文的文档内检索（默认 on；off=纯语义检索）")
-    ap.add_argument("--prompt-mode", default="default", choices=["default", "strict"],
-                    help="strict=禁止使用记忆、只依据检索条文（用于量化记忆效应）")
 
     ap.add_argument("--attack", default="none",
                     choices=["none", "A1", "A2", "A3", "A4", "B1", "B2"])
@@ -256,8 +254,7 @@ def main() -> None:
                 out = rag.answer(q.query, k=args.k, as_of=as_of,
                                  unknown_dates=args.unknown_dates,
                                  context_metadata=args.context_metadata,
-                                 cite_filter=(args.cite_filter == "on"),
-                                 prompt_mode=args.prompt_mode)
+                                 cite_filter=(args.cite_filter == "on"))
             except GenerationError as e:
                 gen_failed, gen_error = True, str(e)[:300]
                 out = {"answer": "", "retrieved": [], "retrieved_versions": [],
@@ -286,7 +283,6 @@ def main() -> None:
                     "embed_model": args.embed_model,
                     "index_backend": args.index_backend,
                     "cite_filter": args.cite_filter,
-                    "prompt_mode": args.prompt_mode,
                 },
                 "article_id": q.article_id,
                 "group": q.group,
@@ -345,7 +341,6 @@ def main() -> None:
         "embed_backend": args.embed_backend, "embed_model": args.embed_model,
         "index_backend": args.index_backend,
         "cite_filter": args.cite_filter,
-        "prompt_mode": args.prompt_mode,
         "corpus": str(args.corpus),
         "background": str(args.background) if args.background else None,
         "n_inject": args.n_inject,
