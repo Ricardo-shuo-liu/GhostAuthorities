@@ -532,11 +532,8 @@ def main() -> None:
     print(f"  {der_dir / 'anomalies.csv'}            源数据瑕疵（{len(anomalies)} 段）")
     print(f"  {der_dir / 'targets_candidates.csv'}   选题池（{n_pen} 条刑档变化）")
     print(f"  {bg_path}   背景层 {len(bg_rows)} 条现行条文")
-    print("\n下一步（示例，换成你的 target 与 facts）：")
-    print("  python -m ragpoison.gold --versions data/derived/article_versions.jsonl \\")
-    print("      --only 176,191,192 \\")
-    print("      --corpus data/corpus.jsonl --questions data/questions.jsonl \\")
-    print("      --facts-json data/facts.json")
+    print("\n下一步：生成 query 排期（old/new 各 5000）")
+    print("  python scripts/generate_queries.py --plan-only")
 
 
 if __name__ == "__main__":

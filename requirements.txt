@@ -1,11 +1,6 @@
-# RAG 向量库（实验默认后端；也可用 --index-backend memory 回退）
-chromadb>=0.4
-
-# 本地向量模型（--embed-backend local，CPU 可跑 bge-small-zh）
-sentence-transformers>=2.7
-
-# 可选：装了会加速 memory 后端的点积（没装自动退回纯 Python）
-# numpy
-
-# 说明：离线自检（--mock）与 API 模式（标准库 urllib 发请求）
-# 不需要以上依赖；大模型 API 无需 openai SDK。
+# 当前仓库只保留「数据清洗 + query 生成/筛选」，全部使用 Python 标准库，
+# 无需安装第三方依赖。
+#
+# 如后续重新搭建检索实验，再自行安装（如）：
+#   chromadb
+#   sentence-transformers

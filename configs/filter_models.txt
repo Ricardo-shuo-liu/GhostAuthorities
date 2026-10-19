@@ -1,0 +1,7 @@
+deepseek-ai/DeepSeek-V4.1-Flash
+zai-org/GLM-5.3-Flash
+tencent/Hy4-preview
+Qwen/Qwen3.8-27B
+stepfun-ai/Step-3.5-Flash
+inclusionAI/Ling-flash-2.0
+Pro/moonshotai/Kimi-K2.6

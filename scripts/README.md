@@ -1,30 +1,40 @@
-# scripts/：数据处理与人工核对脚本
+# scripts/：数据清洗 + query 生成/筛选
 
-这些脚本只负责**文件/数据处理**，不参与实验运行；实验入口在仓库根目录
-（`run_e0.py` / `run_matrix.py` / `report.py`）。所有命令都在**仓库根目录**
-下执行。
+当前仓库只保留这一组脚本；检索/攻击实验的编排由你重新搭建。
+所有命令都在**仓库根目录**执行。
+
+## 数据清洗（人工核对）
 
 | 脚本 | 作用 | 典型用法 |
 |---|---|---|
-| `build_from_consolidated.py` | 把仓库根 `data/` 里的 15 份历年合订本转换成项目格式：raw（按生效日期分文件夹的全量条文）、版本表、选题池、背景层 | `python scripts/build_from_consolidated.py` |
-| `show_article.py` | 人工核对：查看某一条文在各年份的文本、变化点、每次修改前后全文 | `python scripts/show_article.py --article 176 --diff` |
-| `make_toy_data.py` | 生成离线自检用的虚构《示例法》玩具数据（不联网） | `python scripts/make_toy_data.py` |
+| `build_from_consolidated.py` | 15 份历年合订本 → 版本表 / raw / derived / 背景层 | `python scripts/build_from_consolidated.py` |
+| `build_query_targets.py` | 从 504 条中自动筛出可做数值判分的条文，生成 34 条目标配置和全量资格审计 | `python scripts/build_query_targets.py --dry-run` |
+| `build_corpora.py` | 生成 34 条焦点版本语料、503 条现行语料、504 条完整版本语料 | `python scripts/build_corpora.py` |
+| `show_article.py` | 查看某条文的版本沿革与变化点（含文件路径） | `python scripts/show_article.py --article 176 --diff` |
+| `diff_snapshots.py` | 任意两份合订本的逐条差异（旧文本 vs 新文本） | `python scripts/diff_snapshots.py --a 2020年 --b 2023年` |
 
-## build_from_consolidated.py 的产出
+产出（`data/`）：
 
-* `data/raw/刑法/`：最新文件夹（2024-03-01）= **现行全量**（503 个文件，
-  每条一个 `{条号}.txt`）；其余文件夹 = **历史旧版**（该日生效、
-  后被修正案替换的版本）；对照方法见 `data/raw/刑法/README.md`；
-* `data/derived/article_versions.jsonl`：清洗后的版本表（程序入口，
-  供 `python -m ragpoison.gold` 生成 corpus 与题目）；
-* `data/derived/changes.csv`：15 个**相邻快照**的 diff 清单（源数据审计）；
-* `data/derived/anomalies.csv`：被清理的源数据瑕疵（5 处，建议复核）；
-* `data/derived/targets_candidates.csv`：刑档变化过的条文（实验选题池）；
-* `data/background.jsonl`：最新合订本全量条文（检索背景层）。
+* `raw/刑法/`：最新文件夹（2024-03-01）＝现行全量；其余文件夹＝被替换的历史旧版；
+* `derived/article_versions.jsonl`：清洗后的版本表（含生效区间与来源）；
+* `derived/changes.csv`、`derived/diffs/*.csv`：逐快照 / 逐法律的差异明细；
+* `derived/anomalies.csv`：源数据瑕疵记录（建议对照官方文本复核）；
+* `derived/targets_candidates.csv`：刑档变化过的条文（选题池）；
+* `derived/query_eligibility.csv`：504 条逐条资格审计（合格/排除原因）；
+* `corpus.jsonl`：34 条焦点条文的 80 个版本；
+* `corpus_current_only.jsonl`：503 条现行条文；
+* `corpus_all_versions.jsonl`：504 条、684 个版本；
+* `background.jsonl`：最新合订本全量条文（背景语料）。
 
-## 核对建议流程
+## Query 工具
 
-1. `python scripts/show_article.py --article 176` 看目标条文的变化点；
-2. 对每个变化点用 `--diff` 看前后全文，与官方文本（flk.npc.gov.cn）对照；
-3. 有疑问的笔误/回退在 `data/derived/anomalies.csv` 里复核
-   （raw 保留原貌，如 `python scripts/show_article.py --article 273 --folder 2006-06-29`）。
+| 脚本 | 作用 | 典型用法 |
+|---|---|---|
+| `generate_queries.py` | 生成 10000 条自然语言案情 query（old/new 各 5000，内置八条标准校验） | `python scripts/generate_queries.py --plan-only` 先看排期；再去掉 `--plan-only` 正式生成 |
+| `filter_closedbook.py` | 闭卷筛选：7 个模型（硅基流动）在**无检索**条件下提问，任何模型答对即剔除；全程留痕（含 reasoning） | `python scripts/filter_closedbook.py --limit 200` 先校准 |
+| `query_stats.py` | 统计 query 的条文/库/时间分布，检查是否存在条文偏好 | `python scripts/query_stats.py` |
+
+流程：生成排期（34 条 × old/new = 68 格严格配额）→ 正式生成（API）→ 闭卷筛选（7 模型，
+任何答对即剔除）→ 得到干净题库 `filtered/clean_queries.jsonl`；
+每次模型调用留痕于 `filtered/traces.jsonl`（含 reasoning_content）。
+模型列表在 `configs/filter_models.txt`；详细说明见 `data/queries/README.md`。
